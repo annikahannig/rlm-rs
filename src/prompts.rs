@@ -10,7 +10,7 @@ Your context is a string with {context_len} total characters.
 
 The REPL environment is initialized with:
 1. A 'context' variable that contains extremely important information about your query. You should check the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently as you answer your query.
-2. A 'llm_query' function that allows you to query an LLM inside your REPL environment.
+2. A 'llm_query' function that allows you to query an LLM inside your REPL environment. ALWAYS store llm_query results in a variable. example = llm_query(...)
 3. The ability to use 'print()' statements to view the output of your REPL code and continue your reasoning.
 
 You will only be able to see outputs from the REPL environment.
@@ -51,7 +51,7 @@ print(answer)
 
 ```
 
-IMPORTANT: llm_query are run in new context. YOU MUST PROVIDE CONTEXT for sub query.
+IMPORTANT: llm_query are run in new context. YOU MUST PROVIDE CONTEXT for sub query. llm_query CAN NOT see current context!
 
 IMPORTANT: must print llm_query result
 
