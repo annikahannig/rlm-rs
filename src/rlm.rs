@@ -366,14 +366,10 @@ impl Rlm {
             }
 
             // Check for final answer in:
-            // 1. Response text (FINAL() or FINAL_VAR() patterns)
+            // 1. Response text (FINAL("literal") or FINAL(var) patterns)
             // 2. Code execution stdout (FINAL_ANSWER: prefix from FINAL() called in code)
-            let locals = executed_blocks
-                .last()
-                .and_then(|b| b.result.as_ref())
-                .map(|r| &r.locals)
-                .cloned()
-                .unwrap_or_default();
+            // Get all locals from REPL's persistent namespace (not just current iteration)
+            let locals = repl.get_locals();
 
             // First check stdout from code execution
             let final_from_code = executed_blocks

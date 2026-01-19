@@ -7,10 +7,6 @@ static CODE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"```(?:repl|python)\n([\s\S]*?)```").expect("invalid regex")
 });
 
-static FINAL_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"FINAL_VAR\((\w+)\)").expect("invalid regex")
-});
-
 /// Extract code blocks delimited by ```repl``` or ```python``` markers
 pub fn extract_code_blocks(text: &str) -> Vec<String> {
     CODE_BLOCK_RE
@@ -55,20 +51,87 @@ pub fn extract_final_answer_raw(text: &str, locals: &HashMap<String, String>) ->
         let content_start = start_pos + start_marker.len();
 
         // Count parentheses to find the matching close
+        // - Skip parens inside quoted strings (handles unbalanced parens in content)
+        // - Skip emoticon patterns like :) ;) =)
         let mut depth = 1;
         let mut end_pos = None;
+        let remaining = &text[content_start..];
+        let mut in_string: Option<char> = None; // Track if we're inside a string and which quote
 
-        for (i, ch) in text[content_start..].char_indices() {
+        for (i, ch) in remaining.char_indices() {
+            // Handle string tracking (skip parens inside strings)
+            if in_string.is_some() {
+                if Some(ch) == in_string {
+                    // Check for escape (look at previous char)
+                    let is_escaped = i > 0 && remaining[..i].ends_with('\\');
+                    if !is_escaped {
+                        in_string = None;
+                    }
+                }
+                continue; // Don't count parens inside strings
+            }
+
+            // Check for string start
+            if ch == '"' || ch == '\'' {
+                in_string = Some(ch);
+                continue;
+            }
+
             match ch {
                 '(' => depth += 1,
                 ')' => {
                     depth -= 1;
                     if depth == 0 {
-                        end_pos = Some(content_start + i);
-                        break;
+                        // Check if this looks like an emoticon (skip it if so)
+                        let is_emoticon = i > 0 && {
+                            let prev_char = remaining[..i].chars().last().unwrap();
+                            matches!(prev_char, ':' | ';' | '=' | '8' | 'X' | 'x' | 'D' | 'P' | 'p')
+                        };
+
+                        if is_emoticon {
+                            // This is likely an emoticon, keep going
+                            depth = 1; // Reset depth to continue looking
+                        } else {
+                            end_pos = Some(content_start + i);
+                            break;
+                        }
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // If we didn't find a valid close, try again without emoticon skipping
+        if end_pos.is_none() {
+            depth = 1;
+            in_string = None;
+            for (i, ch) in remaining.char_indices() {
+                // Handle string tracking
+                if in_string.is_some() {
+                    if Some(ch) == in_string {
+                        let is_escaped = i > 0 && remaining[..i].ends_with('\\');
+                        if !is_escaped {
+                            in_string = None;
+                        }
+                    }
+                    continue;
+                }
+                if ch == '"' || ch == '\'' {
+                    in_string = Some(ch);
+                    continue;
+                }
+
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_pos = Some(content_start + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -88,6 +151,9 @@ pub fn extract_final_answer_raw(text: &str, locals: &HashMap<String, String>) ->
                     return Some(value.clone());
                 }
             }
+
+            // If content is a quoted string, unescape it
+            let content = unescape_string_literal(&content);
 
             return Some(content);
         }
@@ -176,17 +242,24 @@ fn is_identifier(s: &str) -> bool {
     chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Check for FINAL_VAR(variable_name) and look up in locals
-pub fn extract_final_var(text: &str, locals: &HashMap<String, String>) -> Option<String> {
-    FINAL_VAR_RE
-        .captures(text)
-        .and_then(|cap| cap.get(1))
-        .and_then(|m| locals.get(m.as_str()).cloned())
+/// Strip quotes and unescape \n to actual newlines
+fn unescape_string_literal(s: &str) -> String {
+    let t = s.trim();
+    // Strip matching quotes
+    let inner = if (t.starts_with('"') && t.ends_with('"'))
+        || (t.starts_with('\'') && t.ends_with('\''))
+    {
+        &t[1..t.len() - 1]
+    } else {
+        return s.to_string();
+    };
+    // Simple unescape
+    inner.replace("\\n", "\n").replace("\\t", "\t")
 }
 
-/// Extract either FINAL or FINAL_VAR answer
+/// Extract FINAL answer - handles both FINAL("literal") and FINAL(var)
 pub fn extract_answer(text: &str, locals: &HashMap<String, String>) -> Option<String> {
-    extract_final_answer_raw(text, locals).or_else(|| extract_final_var(text, locals))
+    extract_final_answer_raw(text, locals)
 }
 
 /// Extract FINAL_ANSWER from code execution stdout
@@ -319,49 +392,40 @@ line 3)"#;
     }
 
     #[test]
-    fn test_extract_final_var() {
-        let text = "The result is FINAL_VAR(result)";
+    fn test_extract_final_resolves_variable() {
+        // FINAL(var) looks up variable in locals
+        let text = "The result is FINAL(result)";
         let mut locals = HashMap::new();
         locals.insert("result".to_string(), "computed_value".to_string());
 
         assert_eq!(
-            extract_final_var(text, &locals),
+            extract_answer(text, &locals),
             Some("computed_value".to_string())
         );
     }
 
     #[test]
-    fn test_extract_final_var_not_found() {
-        let text = "FINAL_VAR(missing)";
+    fn test_extract_final_variable_not_found_returns_name() {
+        // If variable not in locals, return the identifier as-is
+        let text = "FINAL(missing)";
         let locals = HashMap::new();
-        assert_eq!(extract_final_var(text, &locals), None);
+        assert_eq!(extract_answer(text, &locals), Some("missing".to_string()));
     }
 
     #[test]
-    fn test_extract_final_var_no_pattern() {
-        let text = "No FINAL_VAR pattern";
-        let mut locals = HashMap::new();
-        locals.insert("result".to_string(), "value".to_string());
-        assert_eq!(extract_final_var(text, &locals), None);
+    fn test_extract_final_literal_string() {
+        // FINAL("literal") strips quotes
+        let text = r#"FINAL("hello world")"#;
+        let locals = HashMap::new();
+        assert_eq!(extract_answer(text, &locals), Some("hello world".to_string()));
     }
 
     #[test]
-    fn test_extract_answer_prefers_final() {
-        let text = "FINAL(direct) and also FINAL_VAR(x)";
-        let mut locals = HashMap::new();
-        locals.insert("x".to_string(), "indirect".to_string());
-
-        // FINAL takes precedence
-        assert_eq!(extract_answer(text, &locals), Some("direct".to_string()));
-    }
-
-    #[test]
-    fn test_extract_answer_falls_back_to_final_var() {
-        let text = "Only FINAL_VAR(x) here";
-        let mut locals = HashMap::new();
-        locals.insert("x".to_string(), "from_var".to_string());
-
-        assert_eq!(extract_answer(text, &locals), Some("from_var".to_string()));
+    fn test_extract_final_literal_with_newlines() {
+        // FINAL("foo\nbar") unescapes to actual newlines
+        let text = r#"FINAL("line1\nline2\nline3")"#;
+        let locals = HashMap::new();
+        assert_eq!(extract_answer(text, &locals), Some("line1\nline2\nline3".to_string()));
     }
 
     #[test]
@@ -412,5 +476,59 @@ line 3)"#;
         // First FINAL is prose, second is valid
         let text = "FINAL(Output from executing code)\nFINAL(42)";
         assert_eq!(extract_final_answer(text), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_final_skips_smiley_emoticon() {
+        // Smiley face :) should not close FINAL
+        let text = "FINAL(answer :) here)";
+        assert_eq!(extract_final_answer(text), Some("answer :) here".to_string()));
+    }
+
+    #[test]
+    fn test_extract_final_skips_wink_emoticon() {
+        // Wink ;) should not close FINAL
+        let text = "FINAL(great job ;) done)";
+        assert_eq!(extract_final_answer(text), Some("great job ;) done".to_string()));
+    }
+
+    #[test]
+    fn test_extract_final_normal_parens_still_work() {
+        // Normal parens should still close at first depth=0
+        let text = "FINAL(42) is the answer";
+        assert_eq!(extract_final_answer(text), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_final_nested_with_emoticon() {
+        // Nested parens followed by emoticon
+        let text = "FINAL(foo(bar) and :) end)";
+        assert_eq!(extract_final_answer(text), Some("foo(bar) and :) end".to_string()));
+    }
+
+    #[test]
+    fn test_extract_final_quoted_string_with_unbalanced_parens() {
+        // Quoted string content with unbalanced parens (like ASCII art)
+        let text = r#"FINAL(
+"Here's some art with unbalanced parens:
+.(.
+(..)
+Pretty cool!"
+)"#;
+        let answer = extract_final_answer(text).unwrap();
+        assert!(answer.contains("unbalanced parens"));
+        assert!(answer.contains(".(."));
+    }
+
+    #[test]
+    fn test_extract_final_multiline_quoted_content() {
+        // Real-world case: multi-line FINAL with quoted string
+        let text = r#"FINAL(
+"The answer is (1+2) = 3.
+Here's more: ((.)) art"
+)"#;
+        let answer = extract_final_answer(text).unwrap();
+        assert!(answer.contains("The answer is"));
+        assert!(answer.contains("(1+2)"));
     }
 }
