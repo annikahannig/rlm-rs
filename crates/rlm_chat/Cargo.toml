@@ -1,0 +1,19 @@
+[package]
+name = "rlm_chat"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive chat CLI for RLM"
+license = "MIT"
+
+[[bin]]
+name = "rlm_chat"
+path = "src/main.rs"
+
+[dependencies]
+rlm = { package = "rlm-rs", path = "../.." }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# For reading stdin
+rustyline = "15"

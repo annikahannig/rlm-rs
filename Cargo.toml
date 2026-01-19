@@ -1,0 +1,39 @@
+[package]
+name = "rlm-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Recursive Language Models - LLM inference with REPL-based task decomposition"
+license = "MIT"
+
+[lib]
+name = "rlm"
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+members = ["crates/rlm_server", "crates/rlm_chat"]
+
+[dependencies]
+# OpenAI client
+async-openai = "0.25"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Python interop
+pyo3 = { version = "0.27", features = ["auto-initialize"] }
+
+# Error handling
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Regex for parsing
+regex = "1.10"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
