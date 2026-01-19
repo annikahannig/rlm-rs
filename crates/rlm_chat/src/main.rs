@@ -20,7 +20,7 @@ struct ChatMessage {
 
 /// Build the context payload for the REPL `context` variable
 ///
-/// RLM puts EVERYTHING into context - data + query + conversation history
+/// Simple chat format - just User/Assistant turns like normal LLM chat.
 fn build_context_payload(
     file_context: Option<&str>,
     history: &[ChatMessage],
@@ -28,29 +28,28 @@ fn build_context_payload(
 ) -> String {
     let mut payload = String::new();
 
+    // System prompt
+    payload.push_str("System: You are a super nice AI agent in conversation with User.\n\n");
+
     // File content (if any)
     if let Some(file_content) = file_context {
-        payload.push_str("=== Context ===\n");
         payload.push_str(file_content);
         payload.push_str("\n\n");
     }
 
-    // Prior conversation history (for multi-turn)
-    if history.len() > 1 {
-        payload.push_str("=== Conversation History ===\n");
-        // Include all but the latest user message
-        for msg in history.iter().take(history.len() - 1) {
-            payload.push_str(msg.role);
-            payload.push_str(": ");
-            payload.push_str(&msg.content);
-            payload.push_str("\n\n");
-        }
+    // Prior conversation in simple chat format
+    for msg in history.iter().take(history.len().saturating_sub(1)) {
+        payload.push_str(msg.role);
+        payload.push_str(": ");
+        payload.push_str(&msg.content);
+        payload.push_str("\n");
     }
 
     // Current query
-    payload.push_str("\nUser: ");
+    payload.push_str("User: ");
     payload.push_str(current_query);
     payload.push_str("\n");
+    payload.push_str("Assistant: ");
 
     payload
 }
@@ -168,20 +167,13 @@ fn main() {
                     input, // Current query
                 );
 
-                // root_prompt is a short reminder shown in user prompts
-                let root_prompt = if input.len() > 100 {
-                    Some(&input[..100])
-                } else {
-                    Some(input)
-                };
-
                 if !args.verbose {
                     print!("Assistant: ");
                     io::stdout().flush().unwrap();
                 }
 
                 // Run completion - context_payload goes into REPL `context` variable
-                match rlm.completion_with_context(&context_payload, root_prompt) {
+                match rlm.completion_with_context(&context_payload, None) {
                     Ok(result) => {
                         // Add assistant response to history
                         history.push(ChatMessage {

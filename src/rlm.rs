@@ -1,8 +1,8 @@
 use async_openai::{
     config::OpenAIConfig,
     types::{
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-        ChatCompletionRequestUserMessageArgs, ChatCompletionRequestAssistantMessageArgs,
+        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
         CreateChatCompletionRequestArgs,
     },
     Client,
@@ -15,10 +15,31 @@ use tokio::runtime::Runtime;
 use crate::env::{execute_with_error_handling, LlmQueryFn, PyO3Repl, ReplEnvironment};
 use crate::error::{Result, RlmError};
 use crate::parsing::{extract_answer, extract_code_blocks, extract_final_answer_from_stdout};
-use crate::prompts::{build_system_prompt, build_initial_user_prompt, build_continue_prompt};
+use crate::prompts::{build_continue_prompt, build_initial_user_prompt, build_system_prompt};
 use crate::types::{
-    CodeBlock, Message, PromptInput, ReplResult, RlmCompletion, RlmConfig, RlmIteration, Role, Usage,
+    CodeBlock, Message, PromptInput, ReplResult, RlmCompletion, RlmConfig, RlmIteration, Role,
+    Usage,
 };
+
+/// Truncate response after first ```repl``` or ```python``` block ends
+/// Discards everything after the closing ``` to force step-by-step evaluation
+fn truncate_after_first_repl_block(text: &str) -> String {
+    // Find start of first repl/python block
+    let block_start = text.find("```repl\n").or_else(|| text.find("```python\n"));
+
+    let Some(start) = block_start else {
+        return text.to_string(); // No block, return as-is
+    };
+
+    // Find the closing ``` after the block start
+    let after_marker = start + 8; // skip past "```repl\n" or "```python"
+    if let Some(end_offset) = text[after_marker..].find("\n```") {
+        let end = after_marker + end_offset + 4; // include the closing ```
+        text[..end].to_string()
+    } else {
+        text.to_string() // No closing, return as-is
+    }
+}
 
 /// Format code execution result for history - simple REPL-style output
 fn format_execution_result(result: &ReplResult) -> String {
@@ -56,7 +77,11 @@ impl Rlm {
     pub fn new(config: RlmConfig) -> Result<Self> {
         let client = Client::new();
         let runtime = Runtime::new()?;
-        Ok(Self { config, client, runtime })
+        Ok(Self {
+            config,
+            client,
+            runtime,
+        })
     }
 
     /// Create with explicit API key
@@ -64,7 +89,11 @@ impl Rlm {
         let openai_config = OpenAIConfig::new().with_api_key(api_key);
         let client = Client::with_config(openai_config);
         let runtime = Runtime::new()?;
-        Ok(Self { config, client, runtime })
+        Ok(Self {
+            config,
+            client,
+            runtime,
+        })
     }
 
     /// Create with custom base URL (for Ollama, local models, etc.)
@@ -74,7 +103,11 @@ impl Rlm {
             .with_api_key("ollama"); // Ollama doesn't need a real key
         let client = Client::with_config(openai_config);
         let runtime = Runtime::new()?;
-        Ok(Self { config, client, runtime })
+        Ok(Self {
+            config,
+            client,
+            runtime,
+        })
     }
 
     /// Create with custom base URL and API key
@@ -84,7 +117,11 @@ impl Rlm {
             .with_api_key(api_key);
         let client = Client::with_config(openai_config);
         let runtime = Runtime::new()?;
-        Ok(Self { config, client, runtime })
+        Ok(Self {
+            config,
+            client,
+            runtime,
+        })
     }
 
     /// Run a completion with the given prompt
@@ -95,13 +132,12 @@ impl Rlm {
         let prompt = prompt.into();
         let context_payload = match &prompt {
             PromptInput::Text(s) => s.clone(),
-            PromptInput::Messages(msgs) => {
-                msgs.iter()
-                    .filter(|m| m.role == Role::User)
-                    .map(|m| m.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            PromptInput::Messages(msgs) => msgs
+                .iter()
+                .filter(|m| m.role == Role::User)
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
         };
         // Root prompt is optional - can be used to remind the model of the original question
         self.completion_with_context(&context_payload, None)
@@ -153,14 +189,12 @@ impl Rlm {
             };
 
             rt.block_on(async {
-                let messages = vec![
-                    ChatCompletionRequestMessage::User(
-                        ChatCompletionRequestUserMessageArgs::default()
-                            .content(prompt)
-                            .build()
-                            .map_err(|e| e.to_string())?
-                    ),
-                ];
+                let messages = vec![ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(prompt)
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                )];
 
                 let request = CreateChatCompletionRequestArgs::default()
                     .model(&model_for_callback)
@@ -204,7 +238,10 @@ impl Rlm {
 
             if self.config.verbose {
                 println!("┌─────────────────────────────────────────────────────────────┐");
-                println!("│ ITERATION {:3}                                               │", iteration_num + 1);
+                println!(
+                    "│ ITERATION {:3}                                               │",
+                    iteration_num + 1
+                );
                 println!("└─────────────────────────────────────────────────────────────┘");
                 println!();
                 println!("📥 LLM Query (message history):");
@@ -215,8 +252,12 @@ impl Rlm {
                         Role::User => "USER",
                         Role::Assistant => "ASSISTANT",
                     };
-                    let content_preview = if msg.content.len() > 500 {
-                        format!("{}...[truncated, {} chars total]", &msg.content[..500], msg.content.len())
+                    let content_preview = if msg.content.len() > 10500 {
+                        format!(
+                            "{}...[truncated, {} chars total]",
+                            &msg.content[..500],
+                            msg.content.len()
+                        )
                     } else {
                         msg.content.clone()
                     };
@@ -225,7 +266,10 @@ impl Rlm {
                 }
                 println!("─────────────────────────────────────────────────────────────");
                 println!();
-                println!("📦 REPL context variable ({} chars):", context_payload.len());
+                println!(
+                    "📦 REPL context variable ({} chars):",
+                    context_payload.len()
+                );
                 if context_payload.len() > 300 {
                     println!("{}...[truncated]", &context_payload[..300]);
                 } else if context_payload.is_empty() {
@@ -238,8 +282,11 @@ impl Rlm {
             }
 
             // Call LLM
-            let (response_text, usage) = self.call_llm(&history)?;
+            let (raw_response, usage) = self.call_llm(&history)?;
             total_usage.add(&usage);
+
+            // Truncate after first ```repl``` block ends - discard everything after
+            let response_text = truncate_after_first_repl_block(&raw_response);
 
             if self.config.verbose {
                 println!();
@@ -257,7 +304,8 @@ impl Rlm {
             // Add assistant response to history
             history.push(Message::assistant(&response_text));
 
-            // Extract and execute code blocks
+            // Extract code blocks - only execute the FIRST one, throw away extras
+            // This forces step-by-step evaluation
             let code_blocks = extract_code_blocks(&response_text);
             let mut executed_blocks: Vec<CodeBlock> = Vec::new();
 
@@ -266,9 +314,17 @@ impl Rlm {
                 let _ = io::stdout().flush();
             }
 
-            for (j, code) in code_blocks.iter().enumerate() {
+            // Only execute first code block (step-by-step)
+            if let Some(code) = code_blocks.first() {
                 if self.config.verbose {
-                    println!("📝 Executing Code Block {}:", j + 1);
+                    if code_blocks.len() > 1 {
+                        println!(
+                            "📝 Executing Code Block 1 of {} (others discarded):",
+                            code_blocks.len()
+                        );
+                    } else {
+                        println!("📝 Executing Code Block:");
+                    }
                     println!("┌─────────────────────────────────────────────────────────────┐");
                     for line in code.lines() {
                         println!("│ {}", line);
@@ -277,17 +333,16 @@ impl Rlm {
                     let _ = io::stdout().flush();
                 }
 
-                let block_result = self.execute_with_retry(
-                    &mut repl,
-                    code,
-                    &mut history,
-                    &mut total_usage,
-                )?;
+                let block_result =
+                    self.execute_with_retry(&mut repl, code, &mut history, &mut total_usage)?;
 
                 if self.config.verbose {
                     if let Some(ref res) = block_result.result {
                         if res.success {
-                            println!("✅ Execution SUCCESS (retries: {})", block_result.retry_count);
+                            println!(
+                                "✅ Execution SUCCESS (retries: {})",
+                                block_result.retry_count
+                            );
                             if !res.stdout.is_empty() {
                                 println!("📤 Output:");
                                 for line in res.stdout.lines() {
@@ -295,7 +350,10 @@ impl Rlm {
                                 }
                             }
                         } else {
-                            println!("❌ Execution FAILED (retries: {})", block_result.retry_count);
+                            println!(
+                                "❌ Execution FAILED (retries: {})",
+                                block_result.retry_count
+                            );
                             if let Some(ref err) = res.error {
                                 println!("   Error: {}", err);
                             }
@@ -358,15 +416,7 @@ impl Rlm {
                 });
             }
 
-            // Add code execution results as user messages (assistant response already added at line 263)
-            for block in &iterations.last().unwrap().code_blocks {
-                if let Some(ref result) = block.result {
-                    let output = format_execution_result(result);
-                    // Simple REPL transcript format
-                    let execution_msg = format!(">>> # Code executed\n{}\n\nOutput:\n{}", block.code, output);
-                    history.push(Message::user(&execution_msg));
-                }
-            }
+            // Note: execution results already added to history in execute_with_retry
 
             // If no code blocks, add a continue prompt to get the model back on track
             if code_blocks.is_empty() {
@@ -387,19 +437,19 @@ impl Rlm {
                     ChatCompletionRequestSystemMessageArgs::default()
                         .content(m.content.clone())
                         .build()
-                        .unwrap()
+                        .unwrap(),
                 ),
                 Role::User => ChatCompletionRequestMessage::User(
                     ChatCompletionRequestUserMessageArgs::default()
                         .content(m.content.clone())
                         .build()
-                        .unwrap()
+                        .unwrap(),
                 ),
                 Role::Assistant => ChatCompletionRequestMessage::Assistant(
                     ChatCompletionRequestAssistantMessageArgs::default()
                         .content(m.content.clone())
                         .build()
-                        .unwrap()
+                        .unwrap(),
                 ),
             })
             .collect();
@@ -416,9 +466,9 @@ impl Rlm {
 
         let request = request_builder.build()?;
 
-        let response = self.runtime.block_on(async {
-            self.client.chat().create(request).await
-        })?;
+        let response = self
+            .runtime
+            .block_on(async { self.client.chat().create(request).await })?;
 
         let content = response
             .choices
@@ -448,17 +498,20 @@ impl Rlm {
         loop {
             let result = execute_with_error_handling(repl, &current_code)?;
 
-            // Add execution result to history
+            // Add execution result to history wrapped in ```result block
             let output = if result.success {
                 if result.stdout.is_empty() {
-                    "Code executed successfully (no output).".to_string()
+                    "```result\n(no output)\n```".to_string()
                 } else {
-                    format!("Output:\n{}", result.stdout)
+                    format!("```result\n{}\n```", result.stdout.trim())
                 }
             } else {
                 format!(
-                    "Execution FAILED with error:\n{}",
-                    result.error.as_ref().unwrap_or(&"Unknown error".to_string())
+                    "```error\n{}\n```",
+                    result
+                        .error
+                        .as_ref()
+                        .unwrap_or(&"Unknown error".to_string())
                 )
             };
             history.push(Message::user(&output));
