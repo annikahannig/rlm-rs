@@ -6,8 +6,9 @@ LLM inference with interactive REPL-based reasoning. Models explore, analyze, an
 
 Based on: https://github.com/alexzhang13/rlm
 
-RLM gives language models a Python REPL environment for performing text generation for chat completion: "You are a LLM."
+RLM gives language models a Python REPL environment and a prompt "You are a LLM performing a TEXT GENERATION task for CHAT COMPLETION."
 
+The model then interacts with the context iteratively until the function '`llm_output`' is invoked.
 
 ## Note
 
