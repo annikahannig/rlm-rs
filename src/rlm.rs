@@ -236,6 +236,12 @@ impl Rlm {
         for iteration_num in 0..self.config.max_iterations {
             let iter_start = Instant::now();
 
+            // Minimal progress log
+            if self.config.exec_log && !self.config.verbose {
+                println!("── iter {} ──", iteration_num + 1);
+                let _ = io::stdout().flush();
+            }
+
             if self.config.verbose {
                 println!("┌─────────────────────────────────────────────────────────────┐");
                 println!(
@@ -312,10 +318,19 @@ impl Rlm {
             if self.config.verbose && code_blocks.is_empty() {
                 println!("📝 No code blocks in this iteration");
                 let _ = io::stdout().flush();
+            } else if self.config.exec_log && !self.config.verbose && code_blocks.is_empty() {
+                println!("   (no code)");
+                let _ = io::stdout().flush();
             }
 
             // Only execute first code block (step-by-step)
             if let Some(code) = code_blocks.first() {
+                if self.config.exec_log && !self.config.verbose {
+                    // Show first line of code as preview
+                    let preview: String = code.lines().next().unwrap_or("").chars().take(50).collect();
+                    println!("   ⚡ {}{}", preview, if code.len() > 50 { "..." } else { "" });
+                    let _ = io::stdout().flush();
+                }
                 if self.config.verbose {
                     if code_blocks.len() > 1 {
                         println!(
@@ -336,6 +351,25 @@ impl Rlm {
                 let block_result =
                     self.execute_with_retry(&mut repl, code, &mut history, &mut total_usage)?;
 
+                if self.config.exec_log && !self.config.verbose {
+                    if let Some(ref res) = block_result.result {
+                        if res.success {
+                            print!("   → ✓");
+                            if !res.stdout.is_empty() {
+                                // Show first line of output
+                                let out_preview: String = res.stdout.lines().next().unwrap_or("").chars().take(60).collect();
+                                print!(" {}", out_preview);
+                                if res.stdout.lines().count() > 1 {
+                                    print!(" (+{} lines)", res.stdout.lines().count() - 1);
+                                }
+                            }
+                            println!();
+                        } else {
+                            println!("   → ✗ {}", res.error.as_deref().unwrap_or("error"));
+                        }
+                    }
+                    let _ = io::stdout().flush();
+                }
                 if self.config.verbose {
                     if let Some(ref res) = block_result.result {
                         if res.success {
@@ -380,6 +414,10 @@ impl Rlm {
             // Then check response text
             let final_answer = final_from_code.or_else(|| extract_answer(&response_text, &locals));
 
+            if self.config.exec_log && !self.config.verbose && final_answer.is_some() {
+                println!("   🎯 FINAL");
+                let _ = io::stdout().flush();
+            }
             if self.config.verbose {
                 println!("⏱️  Iteration time: {:?}", iter_start.elapsed());
                 if final_answer.is_some() {
@@ -414,11 +452,9 @@ impl Rlm {
 
             // Note: execution results already added to history in execute_with_retry
 
-            // If no code blocks, add a continue prompt to get the model back on track
-            if code_blocks.is_empty() {
-                let continue_msg = build_continue_prompt();
-                history.push(Message::user(&continue_msg));
-            }
+            // Add continue prompt to keep model on track
+            let continue_msg = build_continue_prompt(iteration_num, self.config.max_iterations);
+            history.push(Message::user(&continue_msg));
         }
 
         Err(RlmError::MaxIterationsReached(self.config.max_iterations))

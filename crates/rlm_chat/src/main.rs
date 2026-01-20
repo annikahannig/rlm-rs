@@ -74,9 +74,13 @@ struct Args {
     #[arg(short, long, default_value = "0.7")]
     temperature: f32,
 
-    /// Verbose mode (show iterations)
+    /// Verbose mode (show full iterations)
     #[arg(short, long)]
     verbose: bool,
+
+    /// Show execution progress (minimal log)
+    #[arg(short = 'e', long)]
+    exec_log: bool,
 
     /// Context file to load (large files supported)
     #[arg(short = 'c', long)]
@@ -103,7 +107,8 @@ fn main() {
         .with_max_iterations(50)
         .with_max_exec_retries(3)
         .with_temperature(args.temperature)
-        .with_verbose(true);
+        .with_verbose(args.verbose)
+        .with_exec_log(args.exec_log);
 
     // Create RLM instance
     let rlm = match create_rlm(&args, config) {

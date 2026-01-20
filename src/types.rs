@@ -187,6 +187,8 @@ pub struct RlmConfig {
     pub temperature: f32,
     pub max_tokens: Option<u32>,
     pub verbose: bool,
+    /// Show minimal execution progress (iterations, code exec, final)
+    pub exec_log: bool,
 }
 
 impl Default for RlmConfig {
@@ -198,6 +200,7 @@ impl Default for RlmConfig {
             temperature: 0.0,
             max_tokens: None,
             verbose: false,
+            exec_log: false,
         }
     }
 }
@@ -232,6 +235,11 @@ impl RlmConfig {
 
     pub fn with_verbose(mut self, v: bool) -> Self {
         self.verbose = v;
+        self
+    }
+
+    pub fn with_exec_log(mut self, v: bool) -> Self {
+        self.exec_log = v;
         self
     }
 }
