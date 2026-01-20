@@ -399,20 +399,26 @@ impl Rlm {
                 executed_blocks.push(block_result);
             }
 
-            // Check for final answer in:
-            // 1. Response text (FINAL("literal") or FINAL(var) patterns)
-            // 2. Code execution stdout (FINAL_ANSWER: prefix from FINAL() called in code)
-            // Get all locals from REPL's persistent namespace (not just current iteration)
+            // Check for final answer - llm_output() invocation is the primary signal
+            // Also check FINAL patterns for backwards compatibility
             let locals = repl.get_locals();
 
-            // First check stdout from code execution
+            // Primary: Check if llm_output was called in code execution
+            let llm_output_answer = executed_blocks
+                .iter()
+                .filter_map(|b| b.result.as_ref())
+                .find_map(|r| r.llm_output.clone());
+
+            // Fallback: Check stdout from code execution (FINAL_ANSWER: prefix)
             let final_from_code = executed_blocks
                 .iter()
                 .filter_map(|b| b.result.as_ref())
                 .find_map(|r| extract_final_answer_from_stdout(&r.stdout));
 
-            // Then check response text
-            let final_answer = final_from_code.or_else(|| extract_answer(&response_text, &locals));
+            // Fallback: Check response text for FINAL patterns
+            let final_answer = llm_output_answer
+                .or(final_from_code)
+                .or_else(|| extract_answer(&response_text, &locals));
 
             if self.config.exec_log && !self.config.verbose && final_answer.is_some() {
                 println!("   🎯 FINAL");

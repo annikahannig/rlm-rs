@@ -118,6 +118,8 @@ pub struct ReplResult {
     pub llm_calls: Vec<ChatCompletion>,
     pub success: bool,
     pub error: Option<String>,
+    /// Output from llm_output() call - signals iteration should stop
+    pub llm_output: Option<String>,
 }
 
 impl ReplResult {
@@ -131,6 +133,7 @@ impl ReplResult {
             llm_calls: Vec::new(),
             success: true,
             error: None,
+            llm_output: None,
         }
     }
 
@@ -144,6 +147,7 @@ impl ReplResult {
             llm_calls: Vec::new(),
             success: false,
             error: Some(error),
+            llm_output: None,
         }
     }
 }

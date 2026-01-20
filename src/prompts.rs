@@ -68,11 +68,10 @@ Complete the query in the context.
 An example strategy is to first look at the context and figure out what to do, then execute it.
 
 IMPORTANT: Your task is to append. Last part of context very important!
-Your will be queried iterative until you provide a final answer.
 
 IMPORTANT: must print llm_query result
 
-IMPORTANT: When you are done with the iterative process, you MUST provide a final variable. Use FINAL(answer_variable_name) function when you have completed your task, NOT in code. Do not use these tags unless you have completed your task.
+IMPORTANT: When you are done, call llm_output(your_answer) with your final answer. You will be queried iteratively until you call llm_output.
 
 Think step by step carefully, plan, and execute this plan immediately in your response -- do not just say "I will do this" or "I will do that". Output to the REPL environment as much as possible. You got this."#,
         context_len = context_len
@@ -160,9 +159,9 @@ pub fn build_continue_prompt(iteration: u32, max_iterations: u32) -> String {
         MUST finish before last iteration.
         Look at your variables with print() to see progress. \
         If processing chunks, continue to next chunk. \
-        Reminder: MUST use FINAL(answer_variable_name) function when you have completed task, NOT in code. Do not use these tags unless you have completed your task.
+        Reminder: MUST use llm_output(answer_variable_name) function when you have completed task. Do not use unless you have completed your task.
         Reminder: llm_query can NOT see conversation - always pass context! \
-        Only use FINAL(var) when you is COMPLETE. Your next action:",
+        Only use llm_output(var) when your task is COMPLETE. Your next action:",
         iteration + 1,
         max_iterations
     )
