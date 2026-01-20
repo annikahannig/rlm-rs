@@ -8,6 +8,11 @@ Based on: https://github.com/alexzhang13/rlm
 
 RLM gives language models a Python REPL environment for performing text generation for chat completion: "You are a LLM."
 
+
+## Note
+
+This is an experiment. Use at own risk.
+
 ## Features
 
 - **Dual Backend Support** - OpenAI-compatible APIs (Ollama, vLLM, etc.) and Anthropic (Claude)
