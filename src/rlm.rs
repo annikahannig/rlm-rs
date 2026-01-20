@@ -1,3 +1,4 @@
+use anthropic_sdk::{Anthropic, ContentBlock, MessageCreateBuilder};
 use async_openai::{
     config::OpenAIConfig,
     types::{
@@ -7,7 +8,6 @@ use async_openai::{
     },
     Client as OpenAIClient,
 };
-use anthropic_sdk::{Anthropic, ContentBlock, MessageCreateBuilder};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -411,8 +411,13 @@ impl Rlm {
             if let Some(code) = code_blocks.first() {
                 if self.config.exec_log && !self.config.verbose {
                     // Show first line of code as preview
-                    let preview: String = code.lines().next().unwrap_or("").chars().take(50).collect();
-                    println!("   ⚡ {}{}", preview, if code.len() > 50 { "..." } else { "" });
+                    let preview: String =
+                        code.lines().next().unwrap_or("").chars().take(50).collect();
+                    println!(
+                        "   ⚡ {}{}",
+                        preview,
+                        if code.len() > 50 { "..." } else { "" }
+                    );
                     let _ = io::stdout().flush();
                 }
                 if self.config.verbose {
@@ -441,7 +446,14 @@ impl Rlm {
                             print!("   → ✓");
                             if !res.stdout.is_empty() {
                                 // Show first line of output
-                                let out_preview: String = res.stdout.lines().next().unwrap_or("").chars().take(60).collect();
+                                let out_preview: String = res
+                                    .stdout
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(60)
+                                    .collect();
                                 print!(" {}", out_preview);
                                 if res.stdout.lines().count() > 1 {
                                     print!(" (+{} lines)", res.stdout.lines().count() - 1);
@@ -722,7 +734,7 @@ impl Rlm {
             // Ask LLM to fix the error
             retry_count += 1;
 
-            let fix_prompt = "Please fix the code and try again. Provide the corrected code in a ```repl``` or ```python``` block.";
+            let fix_prompt = "Please fix the code and try again. Provide the corrected code in a ```repl``` block.";
             history.push(Message::user(fix_prompt));
 
             // Call LLM for fix
