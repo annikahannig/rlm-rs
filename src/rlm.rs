@@ -5,8 +5,9 @@ use async_openai::{
         ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
         CreateChatCompletionRequestArgs,
     },
-    Client,
+    Client as OpenAIClient,
 };
+use anthropic_sdk::{Anthropic, ContentBlock, MessageCreateBuilder};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -17,9 +18,15 @@ use crate::error::{Result, RlmError};
 use crate::parsing::{extract_answer, extract_code_blocks, extract_final_answer_from_stdout};
 use crate::prompts::{build_continue_prompt, build_initial_user_prompt, build_system_prompt};
 use crate::types::{
-    CodeBlock, Message, PromptInput, ReplResult, RlmCompletion, RlmConfig, RlmIteration, Role,
-    Usage,
+    Backend, CodeBlock, Message, PromptInput, ReplResult, RlmCompletion, RlmConfig, RlmIteration,
+    Role, Usage,
 };
+
+/// LLM client abstraction
+enum LlmClient {
+    OpenAI(OpenAIClient<OpenAIConfig>),
+    Anthropic(Anthropic),
+}
 
 /// Truncate response after first ```repl``` or ```python``` block ends
 /// Discards everything after the closing ``` to force step-by-step evaluation
@@ -66,17 +73,18 @@ fn format_execution_result(result: &ReplResult) -> String {
 /// Main RLM orchestrator
 pub struct Rlm {
     config: RlmConfig,
-    client: Client<OpenAIConfig>,
+    client: LlmClient,
     runtime: Runtime,
 }
 
 impl Rlm {
-    /// Create a new RLM instance with the given config
+    /// Create a new RLM instance from config
     ///
-    /// Reads OPENAI_API_KEY from environment.
+    /// Uses config.backend, config.base_url, and config.api_key to configure the client.
+    /// Falls back to environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) if no key provided.
     pub fn new(config: RlmConfig) -> Result<Self> {
-        let client = Client::new();
         let runtime = Runtime::new()?;
+        let client = Self::create_client(&config)?;
         Ok(Self {
             config,
             client,
@@ -84,44 +92,59 @@ impl Rlm {
         })
     }
 
-    /// Create with explicit API key
+    /// Create the appropriate LLM client based on config
+    fn create_client(config: &RlmConfig) -> Result<LlmClient> {
+        match config.backend {
+            Backend::OpenAI => {
+                let mut openai_config = OpenAIConfig::new();
+                if let Some(ref url) = config.base_url {
+                    openai_config = openai_config.with_api_base(url);
+                }
+                if let Some(ref key) = config.api_key {
+                    openai_config = openai_config.with_api_key(key);
+                } else if config.base_url.is_some() {
+                    // For Ollama/local models without explicit key
+                    openai_config = openai_config.with_api_key("ollama");
+                }
+                Ok(LlmClient::OpenAI(OpenAIClient::with_config(openai_config)))
+            }
+            Backend::Anthropic => {
+                let anthropic = if let Some(ref key) = config.api_key {
+                    Anthropic::new(key).map_err(|e| RlmError::Config(e.to_string()))?
+                } else {
+                    Anthropic::from_env().map_err(|e| RlmError::Config(e.to_string()))?
+                };
+                Ok(LlmClient::Anthropic(anthropic))
+            }
+        }
+    }
+
+    /// Create with explicit API key (legacy, prefer using config.with_api_key())
     pub fn with_api_key(config: RlmConfig, api_key: &str) -> Result<Self> {
-        let openai_config = OpenAIConfig::new().with_api_key(api_key);
-        let client = Client::with_config(openai_config);
-        let runtime = Runtime::new()?;
-        Ok(Self {
-            config,
-            client,
-            runtime,
-        })
+        let config = RlmConfig {
+            api_key: Some(api_key.to_string()),
+            ..config
+        };
+        Self::new(config)
     }
 
     /// Create with custom base URL (for Ollama, local models, etc.)
     pub fn with_base_url(config: RlmConfig, base_url: &str) -> Result<Self> {
-        let openai_config = OpenAIConfig::new()
-            .with_api_base(base_url)
-            .with_api_key("ollama"); // Ollama doesn't need a real key
-        let client = Client::with_config(openai_config);
-        let runtime = Runtime::new()?;
-        Ok(Self {
-            config,
-            client,
-            runtime,
-        })
+        let config = RlmConfig {
+            base_url: Some(base_url.to_string()),
+            ..config
+        };
+        Self::new(config)
     }
 
     /// Create with custom base URL and API key
     pub fn with_base_url_and_key(config: RlmConfig, base_url: &str, api_key: &str) -> Result<Self> {
-        let openai_config = OpenAIConfig::new()
-            .with_api_base(base_url)
-            .with_api_key(api_key);
-        let client = Client::with_config(openai_config);
-        let runtime = Runtime::new()?;
-        Ok(Self {
-            config,
-            client,
-            runtime,
-        })
+        let config = RlmConfig {
+            base_url: Some(base_url.to_string()),
+            api_key: Some(api_key.to_string()),
+            ..config
+        };
+        Self::new(config)
     }
 
     /// Run a completion with the given prompt
@@ -172,10 +195,12 @@ impl Rlm {
         let mut iterations: Vec<RlmIteration> = Vec::new();
         let mut total_usage = Usage::default();
 
-        // Create REPL with callback that uses our client
-        let client_for_callback = self.client.clone();
+        // Create REPL with callback that uses our backend config
+        let backend_for_callback = self.config.backend.clone();
         let model_for_callback = self.config.model.clone();
         let temp_for_callback = self.config.temperature;
+        let api_key_for_callback = self.config.api_key.clone();
+        let base_url_for_callback = self.config.base_url.clone();
 
         // We need to track usage from sub-calls
         let sub_call_usage = Arc::new(Mutex::new(Usage::default()));
@@ -189,41 +214,100 @@ impl Rlm {
             };
 
             rt.block_on(async {
-                let messages = vec![ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content(prompt)
-                        .build()
-                        .map_err(|e| e.to_string())?,
-                )];
+                match backend_for_callback {
+                    Backend::OpenAI => {
+                        // Create OpenAI client for sub-call
+                        let mut openai_config = OpenAIConfig::new();
+                        if let Some(ref url) = base_url_for_callback {
+                            openai_config = openai_config.with_api_base(url);
+                        }
+                        if let Some(ref key) = api_key_for_callback {
+                            openai_config = openai_config.with_api_key(key);
+                        } else if base_url_for_callback.is_some() {
+                            openai_config = openai_config.with_api_key("ollama");
+                        }
+                        let client = OpenAIClient::with_config(openai_config);
 
-                let request = CreateChatCompletionRequestArgs::default()
-                    .model(&model_for_callback)
-                    .messages(messages)
-                    .temperature(temp_for_callback)
-                    .build()
-                    .map_err(|e| e.to_string())?;
+                        let messages = vec![ChatCompletionRequestMessage::User(
+                            ChatCompletionRequestUserMessageArgs::default()
+                                .content(prompt)
+                                .build()
+                                .map_err(|e| e.to_string())?,
+                        )];
 
-                let response = client_for_callback
-                    .chat()
-                    .create(request)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                        let request = CreateChatCompletionRequestArgs::default()
+                            .model(&model_for_callback)
+                            .messages(messages)
+                            .temperature(temp_for_callback)
+                            .build()
+                            .map_err(|e| e.to_string())?;
 
-                // Track usage
-                if let Some(usage) = &response.usage {
-                    let mut guard = sub_call_usage_for_callback.lock().unwrap();
-                    guard.input_tokens += usage.prompt_tokens as u64;
-                    guard.output_tokens += usage.completion_tokens as u64;
-                    guard.total_tokens += usage.total_tokens as u64;
+                        let response = client
+                            .chat()
+                            .create(request)
+                            .await
+                            .map_err(|e| e.to_string())?;
+
+                        // Track usage
+                        if let Some(usage) = &response.usage {
+                            let mut guard = sub_call_usage_for_callback.lock().unwrap();
+                            guard.input_tokens += usage.prompt_tokens as u64;
+                            guard.output_tokens += usage.completion_tokens as u64;
+                            guard.total_tokens += usage.total_tokens as u64;
+                        }
+
+                        let content = response
+                            .choices
+                            .first()
+                            .and_then(|c| c.message.content.clone())
+                            .unwrap_or_default();
+
+                        Ok(content)
+                    }
+                    Backend::Anthropic => {
+                        // Create Anthropic client for sub-call
+                        let client = if let Some(ref key) = api_key_for_callback {
+                            Anthropic::new(key).map_err(|e| e.to_string())?
+                        } else {
+                            Anthropic::from_env().map_err(|e| e.to_string())?
+                        };
+
+                        let params = MessageCreateBuilder::new(&model_for_callback, 4096)
+                            .user(prompt)
+                            .build();
+
+                        let response = client
+                            .messages()
+                            .create(params)
+                            .await
+                            .map_err(|e| e.to_string())?;
+
+                        // Track usage
+                        {
+                            let mut guard = sub_call_usage_for_callback.lock().unwrap();
+                            guard.input_tokens += response.usage.input_tokens as u64;
+                            guard.output_tokens += response.usage.output_tokens as u64;
+                            guard.total_tokens +=
+                                (response.usage.input_tokens + response.usage.output_tokens) as u64;
+                        }
+
+                        // Extract text from content blocks
+                        let content = response
+                            .content
+                            .iter()
+                            .filter_map(|block| {
+                                if let ContentBlock::Text { text } = block {
+                                    Some(text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+
+                        Ok(content)
+                    }
                 }
-
-                let content = response
-                    .choices
-                    .first()
-                    .and_then(|c| c.message.content.clone())
-                    .unwrap_or_default();
-
-                Ok(content)
             })
         });
 
@@ -468,6 +552,18 @@ impl Rlm {
 
     /// Call the LLM with the current history
     fn call_llm(&self, history: &[Message]) -> Result<(String, Usage)> {
+        match &self.client {
+            LlmClient::OpenAI(client) => self.call_openai(client, history),
+            LlmClient::Anthropic(client) => self.call_anthropic(client, history),
+        }
+    }
+
+    /// Call OpenAI-compatible API
+    fn call_openai(
+        &self,
+        client: &OpenAIClient<OpenAIConfig>,
+        history: &[Message],
+    ) -> Result<(String, Usage)> {
         let messages: Vec<ChatCompletionRequestMessage> = history
             .iter()
             .map(|m| match m.role {
@@ -506,7 +602,7 @@ impl Rlm {
 
         let response = self
             .runtime
-            .block_on(async { self.client.chat().create(request).await })?;
+            .block_on(async { client.chat().create(request).await })?;
 
         let content = response
             .choices
@@ -518,6 +614,66 @@ impl Rlm {
             .usage
             .map(|u| Usage::new(u.prompt_tokens as u64, u.completion_tokens as u64))
             .unwrap_or_default();
+
+        Ok((content, usage))
+    }
+
+    /// Call Anthropic API
+    fn call_anthropic(&self, client: &Anthropic, history: &[Message]) -> Result<(String, Usage)> {
+        // Extract system message
+        let system_content = history
+            .iter()
+            .find(|m| m.role == Role::System)
+            .map(|m| m.content.clone());
+
+        // Build request using builder pattern
+        let max_tokens = self.config.max_tokens.unwrap_or(4096);
+        let mut builder = MessageCreateBuilder::new(&self.config.model, max_tokens);
+
+        // Add system prompt if present
+        if let Some(system) = system_content {
+            builder = builder.system(system);
+        }
+
+        // Add temperature if set
+        if self.config.temperature > 0.0 {
+            builder = builder.temperature(self.config.temperature);
+        }
+
+        // Add messages (skip system messages)
+        for msg in history.iter().filter(|m| m.role != Role::System) {
+            builder = match msg.role {
+                Role::User => builder.user(msg.content.clone()),
+                Role::Assistant => builder.assistant(msg.content.clone()),
+                Role::System => builder, // shouldn't happen due to filter
+            };
+        }
+
+        let params = builder.build();
+
+        let response = self
+            .runtime
+            .block_on(async { client.messages().create(params).await })
+            .map_err(|e| RlmError::Api(e.to_string()))?;
+
+        // Extract text from content blocks
+        let content = response
+            .content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        let usage = Usage::new(
+            response.usage.input_tokens as u64,
+            response.usage.output_tokens as u64,
+        );
 
         Ok((content, usage))
     }

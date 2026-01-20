@@ -5,8 +5,8 @@
 //! - The system prompt tells the model to examine `context` to find what to do
 //! - The model uses the REPL to recursively process the context with sub-LLM calls
 
-use clap::Parser;
-use rlm::{Rlm, RlmConfig};
+use clap::{Parser, ValueEnum};
+use rlm::{Backend, Rlm, RlmConfig};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::io::{self, Write};
@@ -54,6 +54,25 @@ fn build_context_payload(
     payload
 }
 
+/// CLI Backend selection
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum CliBackend {
+    /// OpenAI-compatible API (default, works with Ollama)
+    #[default]
+    Openai,
+    /// Anthropic API (Claude)
+    Anthropic,
+}
+
+impl From<CliBackend> for Backend {
+    fn from(cli: CliBackend) -> Self {
+        match cli {
+            CliBackend::Openai => Backend::OpenAI,
+            CliBackend::Anthropic => Backend::Anthropic,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "rlm_chat")]
 #[command(about = "Interactive chat CLI for RLM")]
@@ -62,11 +81,15 @@ struct Args {
     #[arg(short, long, default_value = "cogito:14b")]
     model: String,
 
-    /// Backend LLM URL
+    /// Backend provider (openai or anthropic)
+    #[arg(short, long, value_enum, default_value = "openai")]
+    backend: CliBackend,
+
+    /// Backend LLM URL (for OpenAI-compatible backends)
     #[arg(short = 'u', long, default_value = "http://localhost:11434/v1")]
     backend_url: String,
 
-    /// Backend API key
+    /// Backend API key (uses OPENAI_API_KEY or ANTHROPIC_API_KEY env vars if not set)
     #[arg(short = 'k', long)]
     backend_key: Option<String>,
 
@@ -103,19 +126,33 @@ fn main() {
             });
 
     // Configure RLM
-    let config = RlmConfig::new(&args.model)
+    let mut config = RlmConfig::new(&args.model)
         .with_max_iterations(50)
         .with_max_exec_retries(3)
         .with_temperature(args.temperature)
         .with_verbose(args.verbose)
-        .with_exec_log(args.exec_log);
+        .with_exec_log(args.exec_log)
+        .with_backend(args.backend.into());
+
+    // Set base URL for OpenAI-compatible backends
+    if matches!(args.backend, CliBackend::Openai) {
+        config = config.with_base_url(&args.backend_url);
+    }
+
+    // Set API key if provided
+    if let Some(ref key) = args.backend_key {
+        config = config.with_api_key(key);
+    }
 
     // Create RLM instance
-    let rlm = match create_rlm(&args, config) {
+    let rlm = match Rlm::new(config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to create RLM: {}", e);
-            eprintln!("Make sure the backend is running");
+            match args.backend {
+                CliBackend::Openai => eprintln!("Make sure the backend is running at {}", args.backend_url),
+                CliBackend::Anthropic => eprintln!("Make sure ANTHROPIC_API_KEY is set or use -k"),
+            }
             std::process::exit(1);
         }
     };
@@ -125,7 +162,10 @@ fn main() {
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("Model:   {}", args.model);
-    println!("Backend: {}", args.backend_url);
+    match args.backend {
+        CliBackend::Openai => println!("Backend: OpenAI @ {}", args.backend_url),
+        CliBackend::Anthropic => println!("Backend: Anthropic"),
+    }
     if let Some(ref path) = args.context_file {
         let size = file_context.as_ref().map(|c| c.len()).unwrap_or(0);
         println!("Context: {} ({} bytes)", path.display(), size);
@@ -227,12 +267,5 @@ fn main() {
                 break;
             }
         }
-    }
-}
-
-fn create_rlm(args: &Args, config: RlmConfig) -> rlm::Result<Rlm> {
-    match &args.backend_key {
-        Some(key) => Rlm::with_base_url_and_key(config, &args.backend_url, key),
-        None => Rlm::with_base_url(config, &args.backend_url),
     }
 }

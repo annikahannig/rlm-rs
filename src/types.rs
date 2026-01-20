@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// LLM Backend provider
+#[derive(Debug, Clone, Default)]
+pub enum Backend {
+    #[default]
+    OpenAI,
+    Anthropic,
+}
+
 /// Token usage statistics
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
@@ -193,6 +201,12 @@ pub struct RlmConfig {
     pub verbose: bool,
     /// Show minimal execution progress (iterations, code exec, final)
     pub exec_log: bool,
+    /// LLM backend provider
+    pub backend: Backend,
+    /// Base URL for API (optional, for custom endpoints)
+    pub base_url: Option<String>,
+    /// API key (optional, can use env vars)
+    pub api_key: Option<String>,
 }
 
 impl Default for RlmConfig {
@@ -205,6 +219,9 @@ impl Default for RlmConfig {
             max_tokens: None,
             verbose: false,
             exec_log: false,
+            backend: Backend::default(),
+            base_url: None,
+            api_key: None,
         }
     }
 }
@@ -244,6 +261,21 @@ impl RlmConfig {
 
     pub fn with_exec_log(mut self, v: bool) -> Self {
         self.exec_log = v;
+        self
+    }
+
+    pub fn with_backend(mut self, backend: Backend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = Some(url.into());
+        self
+    }
+
+    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
+        self.api_key = Some(key.into());
         self
     }
 }

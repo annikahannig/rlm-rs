@@ -16,6 +16,6 @@ mod rlm;
 pub use error::{Result, RlmError};
 pub use rlm::Rlm;
 pub use types::{
-    ChatCompletion, CodeBlock, Message, PromptInput, ReplResult, RlmCompletion, RlmConfig,
+    Backend, ChatCompletion, CodeBlock, Message, PromptInput, ReplResult, RlmCompletion, RlmConfig,
     RlmIteration, Role, Usage,
 };

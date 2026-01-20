@@ -26,6 +26,9 @@ pub enum RlmError {
 
     #[error("Invalid configuration: {0}")]
     Config(String),
+
+    #[error("API error: {0}")]
+    Api(String),
 }
 
 /// Result type alias for RLM operations

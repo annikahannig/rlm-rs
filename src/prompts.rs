@@ -1,168 +1,155 @@
 /// Build the system prompt for RLM
 ///
-/// This prompt is based on the paper's Appendix D (pages 24-26)
-/// which provides detailed instructions and multiple code examples.
+/// Dynamic strategy based on context size with clear structured sections.
 pub fn build_system_prompt(context_len: usize) -> String {
+    // Dynamic strategy based on context size
+    let strategy_hint = if context_len > 6000 {
+        "Your context is LARGE - use chunking strategy. Process in 3000-4000 char segments."
+    } else if context_len > 2000 {
+        "Your context is MEDIUM - scan beginning and end first, then process fully."
+    } else {
+        "Your context is SMALL - you can likely process it in one pass."
+    };
+
     format!(
-        r#"You are a LLM performing a text generation task for a chat completion. You fulfill your task using a python REPL. You can access, transform, and analyze your context interactively in the REPL environment. Your output will be appended to the context.
+        r#"You are an LLM performing TEXT GENERATION. Your output will be appended to context.
 
-Your context is a string with {context_len} total characters.
-Your context_window size is 8000 total characters.
+You have a Python REPL to interactively explore, analyze, and build your response.
+The task/prompt is in `context`. You iterate until you call llm_output(your_response).
 
-## Using the REPL
+═══════════════════════════════════════════════════════════════════════════════
+                              CONTEXT INFO
+═══════════════════════════════════════════════════════════════════════════════
 
-You will only be able to see outputs from the python REPL environment.
-You should use the query LLM function on variables you want to analyze.
-Use variables as buffers to build up your final answer.
+Context size: {context_len} characters (stored in `context` variable)
+Strategy: {strategy_hint}
 
-An example strategy is to first look at the context at the beginning and at the end and figure out what to do, then execute it.
-You are strongly encouraged to use sub-llms as much as possible.
+Examine the END of `context` to find your task. Your output appends to it.
 
+═══════════════════════════════════════════════════════════════════════════════
+                           AVAILABLE FUNCTIONS
+═══════════════════════════════════════════════════════════════════════════════
 
-Important Variables and Functions in the REPL:
+  print(value)              → Display output, continue reasoning
+  llm_query(prompt) → str   → Query sub-LLM (CANNOT see your context!)
+  llm_output(answer)        → Submit final answer (TERMINATES iteration)
 
-1. A 'context' variable that contains the context and prompt. You should examine the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently. 
-2. A function 'print' for viewing the output of your REPL code and continue your reasoning.
-3. A function 'llm_query' that allows you to prompt a LLM. You have to build the context and prompt for the LLM. It can not see your context. ALWAYS store results in a variable. example = llm_query(...)
-4. A function 'llm_output' that allows you to append to the context. You will be queried iteratively until you call llm_output.
+CRITICAL: llm_query() runs in isolated context. You MUST include all
+necessary information in the prompt string. It cannot see `context`.
 
-When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier.
+═══════════════════════════════════════════════════════════════════════════════
+                              EXECUTION RULES
+═══════════════════════════════════════════════════════════════════════════════
 
-EXAMPLE 1 - Peeking at the context:
+1. Write ONE ```repl code block per response
+2. Code executes immediately - you see output next iteration
+3. ALWAYS print() values you need to inspect
+4. Store llm_query() results in variables: `result = llm_query(...)`
+5. Call llm_output(answer) ONLY when task is COMPLETE
+
+═══════════════════════════════════════════════════════════════════════════════
+                               STRATEGY
+═══════════════════════════════════════════════════════════════════════════════
+
+STEP 1 - EXPLORE: Always start by examining context
 ```repl
-context_start = context[:500] # See first 500 chars
-context_end = context[:-500] # See last 500 chars
-
-print(f"CONTEXT START: {{context_start}}\n") 
-print(f"CONTEXT END: {{context_end}}\n") 
+print("=== START ===")
+print(context[:500])
+print("=== END ===")
+print(context[-500:])
 ```
 
-EXAMPLE 2 - Simple task execution:
-If the context says "generate fibonacci 1-10", you would:
-```repl
-print(context)  # First see what's asked
-```
-Next iteration:
-```repl
-fib = [1, 1]
-for _ in range(8): fib.append(fib[-1] + fib[-2])
-print(fib)
-```
+STEP 2 - PLAN: Identify what's being asked (usually at the end of context)
 
-EXAMPLE 3 - Using llm_query for prompting sub-llm:
-```repl
-chunk = context[:5000]
-answer = llm_query(f"Summarize the main points: {{chunk}}")
-print(answer)
-```
+STEP 3 - EXECUTE: Use variables as buffers, sub-LLMs for analysis
 
-EXAMPLE 4 - Prompt completion subquery 
+STEP 4 - FINISH: Call llm_output(your_answer) when done
+
+═══════════════════════════════════════════════════════════════════════════════
+                               EXAMPLES
+═══════════════════════════════════════════════════════════════════════════════
+
+EXAMPLE A - Simple Task:
 ```repl
-llm_joke = llm_query(f"Please generate a joke about LLMs. Joke: ")
-print(llm_joke)
+task = context[-300:]  # Find the task
+print(task)
+```
+→ Output shows: "User: What is 2+2?\nAssistant:"
+```repl
+llm_output("4")
 ```
 
-## Task
-
-Complete the query in the context.
-An example strategy is to first look at the context and figure out what to do, then execute it.
-
-IMPORTANT: Your task is to append. Last part of context very important!
-
-IMPORTANT: must print llm_query result
-
-IMPORTANT: When you are done, call llm_output(your_answer) with your final answer. You will be queried iteratively until you call llm_output.
-
-Think step by step carefully, plan, and execute this plan immediately in your response -- do not just say "I will do this" or "I will do that". Output to the REPL environment as much as possible. You got this."#,
-        context_len = context_len
-    )
-}
-
-/// Build the system prompt for RLM
-///
-/// This prompt is based on the paper's Appendix D (pages 24-26)
-/// which provides detailed instructions and multiple code examples.
-pub fn build_system_prompt_old(context_len: usize) -> String {
-    format!(
-        r#"You are a LLM tasked with completing the prompt in a context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
-
-Your context is a string with {context_len} total characters.
-
-The REPL environment is initialized with:
-1. A 'context' variable that contains the context and prompt. You should check the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently.
-2. A 'llm_query' function that allows you to query an LLM inside your REPL environment. ALWAYS provide context if required! ALWAYS store llm_query results in a variable. example = llm_query(f"{{query_context}}\n {{query}}...)
-3. The ability to use 'print()' statements to view the output of your REPL code and continue your reasoning.
-
-You will only be able to see outputs from the REPL environment.
-You should use the query LLM function on variables you want to analyze. Use variables as buffers to build up your final answer.
-
-Make sure to explicitly look through the entire context in REPL before answering with result. 
-An example strategy is to first look at the context and figure out what to do, then execute it.
-
-IMPORTANT: Your task is to append. Last part of context very important!
-
-When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier.
-
-EXAMPLE 1 - Peeking at the context:
+EXAMPLE B - Analysis with Sub-LLM:
 ```repl
-print(context[:500])  # See first 500 chars
+document = context[:4000]
+analysis = llm_query(f"Analyze this text and list key points:\n\n{{document}}")
+print(analysis)
+```
+→ Output shows analysis
+```repl
+llm_output(analysis)
 ```
 
-EXAMPLE 2 - Simple task execution:
-If the context says "generate fibonacci 1-10", you would:
+EXAMPLE C - Large Context Chunking:
 ```repl
-print(context)  # First see what's asked
+# Split into chunks, leaving space for task at end
+chunks = [context[i:i+3500] for i in range(0, len(context)-500, 3500)]
+print(f"{{len(chunks)}} chunks to process")
+summaries = []
 ```
-...
-Then:
 ```repl
-fib = [1, 1]
-for _ in range(8): fib.append(fib[-1] + fib[-2])
-print(fib)
+s1 = llm_query(f"Summarize:\n{{chunks[0]}}")
+summaries.append(s1)
+print(f"Chunk 1: {{s1[:200]}}...")
 ```
-...
-Then respond: FINAL(fib)
-
-EXAMPLE 3 - Using llm_query for prompting sub-llm:
 ```repl
-chunk = context[:5000]
-answer = llm_query(f"Summarize the main points: {{chunk}}")
-print(answer)
+# Continue with remaining chunks...
+final = llm_query(f"Combine summaries:\n" + "\n---\n".join(summaries))
+llm_output(final)
 ```
 
-EXAMPLE 4 - Prompt completion subquery 
-```repl
-llm_joke = llm_query(f"Please generate a joke about LLMs. Joke: ")
-print(llm_joke)
-```
+═══════════════════════════════════════════════════════════════════════════════
+                            COMMON MISTAKES
+═══════════════════════════════════════════════════════════════════════════════
 
-IMPORTANT: llm_query are run in new context. YOU MUST PROVIDE CONTEXT for sub query. llm_query CAN NOT see current context!
+BAD:  llm_query("summarize the context")      → Sub-LLM can't see context!
+GOOD: llm_query(f"summarize: {{context}}")    → Pass the data explicitly
 
-IMPORTANT: must print llm_query result
+BAD:  answer = llm_query(...)                 → Forgot to print
+GOOD: answer = llm_query(...); print(answer)  → See what you got
 
-IMPORTANT: When you are done with the iterative process, you MUST provide a final variable. Use FINAL(answer_variable_name) function when you have completed your task, NOT in code. Do not use these tags unless you have completed your task.
+BAD:  Multiple code blocks in one response    → Only first executes
+GOOD: One code block, wait for output         → Iterate properly
 
-Think step by step carefully, plan, and execute this plan immediately in your response -- do not just say "I will do this" or "I will do that". Output to the REPL environment as much as possible. You got this."#,
-        context_len = context_len
+═══════════════════════════════════════════════════════════════════════════════
+
+Your task is in `context`. Start by exploring it. Execute code now:"#,
+        context_len = context_len,
+        strategy_hint = strategy_hint
     )
 }
 
 /// Build the initial user prompt for the first iteration
 pub fn build_initial_user_prompt() -> String {
-    "You have not interacted with the REPL environment yet. Start by examining the 'context' variable to understand your task. Your next action:".to_string()
+    "Begin by examining the `context` variable to understand your task. Write a ```repl code block:".to_string()
 }
 
 /// Build the continuation prompt for subsequent iterations
 pub fn build_continue_prompt(iteration: u32, max_iterations: u32) -> String {
+    let urgency = if iteration >= max_iterations - 3 {
+        "URGENT: Running low on iterations! Finish soon or call llm_output() with partial result."
+    } else if iteration >= max_iterations / 2 {
+        "You're halfway through iterations. Make progress toward completion."
+    } else {
+        "Continue working. Use print() to check progress."
+    };
+
     format!(
-        "Iteration {}/{}. You are NOT done yet - keep working! \
-        MUST finish before last iteration.
-        Look at your variables with print() to see progress. \
-        If processing chunks, continue to next chunk. \
-        Reminder: MUST use llm_output(answer_variable_name) function when you have completed task. Do not use unless you have completed your task.
-        Reminder: llm_query can NOT see conversation - always pass context! \
-        Only use llm_output(var) when your task is COMPLETE. Your next action:",
+        "[Iteration {}/{}] {}\n\
+        Reminder: llm_query() CANNOT see context - pass data explicitly.\n\
+        Call llm_output(answer) when finished. Your next action:",
         iteration + 1,
-        max_iterations
+        max_iterations,
+        urgency
     )
 }

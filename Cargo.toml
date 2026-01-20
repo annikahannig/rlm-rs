@@ -17,6 +17,9 @@ members = ["crates/rlm_server", "crates/rlm_chat"]
 async-openai = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
+# Anthropic client
+anthropic-sdk-rust = "0.1"
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
