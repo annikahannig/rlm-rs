@@ -10,7 +10,7 @@ name = "rlm"
 crate-type = ["cdylib", "rlib"]
 
 [workspace]
-members = ["crates/rlm_server", "crates/rlm_chat"]
+members = ["crates/rlm_server", "crates/rlm_chat", "crates/rlm_agent"]
 
 [dependencies]
 # OpenAI client
