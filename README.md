@@ -169,4 +169,4 @@ MIT
 
 ---
 
-Built with Rust + PyO3
+Built with Rust + PyO3 and Claude :)
